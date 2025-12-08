@@ -1,122 +1,104 @@
 import feedparser, requests, re, time, os, hashlib
 from googletrans import Translator
 from bs4 import BeautifulSoup
-from datetime import datetime
 
 # ================== 配置 ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
-translator = Translator()
+MAX_COUNT = 10
 
-# 科技类 RSS（2025年实测全部可用）
-RSS = [
+# 科技类 RSS（2025 年全部可用）
+RSS_FEEDS = [
     "https://www.theverge.com/rss/index.xml",
     "https://techcrunch.com/feed/",
     "https://www.wired.com/feed/rss",
     "https://arstechnica.com/feed/",
-    "https://www.engadget.com/rss.xml",
-    "https://rsshub.app/36kr/newsflashes",
-    "https://feeds.feedburner.com/mittrchinese",
+    "https://feeds.feedburner.com/mittrchinese",        # MIT 科技评论中文
+    "https://rsshub.app/36kr/newsflashes",              # 36氪
+    "https://www.ifanr.com/feed",                       # 爱范儿
+    "https://sspai.com/feed",                           # 少数派
 ]
 
-# 免费 OCR + 免费图片加文字 API（超稳）
-OCR_API = "https://api.ocr.space/parse/image"
-TEXT_ON_IMG = "https://api.textinimage.com/overlay"
+translator = Translator(service_urls=['translate.google.com'])
 
-seen_hashes = set()  # 今天已发的新闻哈希（去重）
+# 简单去重：用标题的 md5 存当天已发记录
+seen = set()
 
-def hash_title(title):
-    return hashlib.md5(title.encode('utf-8')).hexdigest()[:12]
+def md5(s): 
+    return hashlib.md5(s.encode()).hexdigest()
+
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 def translate(text):
     if not text: return ""
     try:
         time.sleep(0.7)
         return translator.translate(text.strip(), dest='zh-cn').text
-    except:
+    except Exception as e:
+        log(f"翻译失败: {e}")
         return text.strip()
 
-def get_image_url(link):
+def get_image(link):
     try:
-        r = requests.get(link, timeout=10)
+        r = requests.get(link, timeout=9, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(r.text, 'lxml')
         img = soup.find("meta", property="og:image")
         return img["content"] if img else None
     except:
         return None
 
-def ocr_and_overlay(image_url):
-    """把图片里的英文翻译成中文并打上去"""
-    try:
-        # 1. OCR 识别图片文字
-        ocr = requests.post(OCR_API, data={
-            'apikey': 'helloworld',      # ocr.space 免费默认key
-            'url': image_url,
-            'language': 'eng',
-        }).json()
-        en_text = ocr.get("ParsedResults",[{}])[0].get("ParsedText","").strip()
-        if not en_text: return image_url
+def send(photo_url=None, caption=""):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{'sendPhoto' if photo_url else 'sendMessage'}"
+    data = {"chat_id": CHAT_ID, "parse_mode": "HTML", "disable_web_page_preview": False}
+    if photo_url:
+        data["photo"] = photo_url
+        data["caption"] = caption[:1000]
+    else:
+        data["text"] = caption
 
-        # 2. 翻译成中文
-        zh_text = translate(en_text)
-        if len(zh_text) > 100: zh_text = zh_text[:100] + "…"
+    for i in range(3):
+        try:
+            r = requests.post(url, data=data, timeout=15)
+            if r.json().get("ok"):
+                return True
+        except:
+            time.sleep(2)
+    log("发送失败")
+    return False
 
-        # 3. 把中文打到图片右下角（大白字黑边）
-        overlay = f"{TEXT_ON_IMG}?text={requests.utils.quote(zh_text)}&url={requests.utils.quote(image_url)}&fontSize=52&color=ffffff&stroke=000000&strokeWidth=8&gravity=southeast&padding=30"
-        return overlay
-    except:
-        return image_url  # 任何一步失败就返回原图
+# =============== 开始 ===============
+log("科技新闻机器人启动")
 
-def send(photo_url, caption):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    try:
-        requests.post(url+"sendPhoto", data={
-            "chat_id": CHAT_ID,
-            "photo": photo_url,
-            "caption": caption[:1000],
-            "parse_mode": "HTML"
-        }, timeout=20)
-    except:
-        # 发不了图就发文字
-        requests.post(url+"sendMessage", data={
-            "chat_id": CHAT_ID,
-            "text": caption,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        }, timeout=20)
-
-# ================== 开机问好 ==================
-send(None, f"晚上好！科技头条 · {datetime.now().strftime('%m月%d日 %A')}")
+send(caption="晚上好！今晚最热科技新闻来啦")
 
 count = 0
-for feed_url in RSS:
-    feed = feedparser.parse(feed_url)
-    for entry in feed.entries:
-        if count >= 10: break
+for url in _FEEDS:
+    if count >= MAX_COUNT: break
+    log(f"抓取 {url}")
+    try:
+        feed = feedparser.parse(url)
+        for e in feed.entries:
+            if count >= MAX_COUNT: break
+            title = re.sub('<[^>]+>', '', e.title)
+            key = md5(title)
+            if key in seen: 
+                continue
+            seen.add(key)
 
-        raw_title = entry.title
-        title_hash = hash_title(raw_title)
-        if title_hash in seen_hashes: continue
-        seen_hashes.add(title_hash)
+            link = e.link
+            img = get_image(link)
 
-        link = entry.link
-        summary = (getattr(entry, 'summary', '') or getattr(entry, 'description', '') or '')[:300]
+            zh_title = translate(title)
+            caption = f"<b>{zh_title}</b>\n\n来源：{feed.feed.get('title','科技新闻')}\n<a href='{link}'>阅读全文</a>"
 
-        zh_title   = translate(raw_title)
-        zh_summary = translate(summary) if summary else ""
+            if send(img, caption):
+                count += 1
+                log(f"成功 #{count}: {zh_title[:30]}")
+            time.sleep(4.5)  # 防风控
+    except Exception as e:
+        log(f"抓取失败: {e}")
 
-        caption = f"<b>{zh_title}</b>\n\n{zh_summary}\n\n来源：{feed.feed.get('title','科技新闻')}\n<a href='{link}'>阅读全文</a>"
-
-        img = get_image_url(link)
-        if img:
-            final_img = ocr_and_overlay(img)   # 关键：图片中文字幕
-            send(final_img, caption)
-        else:
-            send(None, caption)
-
-        count += 1
-        time.sleep(5)
-
-# ================== 收尾 ==================
-send(None, f"今晚精选 {count} 条科技新闻已送达\n图片上的英文已自动翻译成中文\n晚安")
-print(f"科技新闻推送完成，共 {count} 条")
+# 收尾
+send(caption=f"今晚科技精选 {count} 条已全部送达\n祝你晚安")
+log("全部完成")
