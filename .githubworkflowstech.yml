@@ -1,0 +1,31 @@
+name: 每晚科技新闻（全中文+带图）
+
+on:
+  schedule:
+    - cron: '0 12 * * *'     # UTC 12:00 = 北京时间晚上 8 点
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          path: .
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          pip install feedparser requests googletrans==4.0.0-rc1 beautifulsoup4 lxml
+
+      - name: 运行科技新闻机器人
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python tech_bot.py
