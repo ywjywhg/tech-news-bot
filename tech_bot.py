@@ -1,91 +1,95 @@
-import os, feedparser, requests, re, time
+import feedparser, requests, re, time, os
 from googletrans import Translator
-
-# ========= 强制打印每一行，方便你我看日志 =========
-def log(msg):
-    print("=== " + msg)
-
-log("脚本开始运行")
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN:
-    log("ERROR: BOT_TOKEN 没拿到！去 Secrets 检查名字是不是写错")
-    exit(1)
-if not CHAT_ID:
-    log("ERROR: CHAT_ID 没拿到！")
-    exit(1)
-
-log("Token 前6位: " + BOT_TOKEN[:10] + "...")
-log("Chat ID: " + CHAT_ID)
-
-# 先发一句最简单的纯文字测试
-def test_send():
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "text": "测试消息：机器人已成功启动！"}, timeout=15)
-        result = r.json()
-        log(f"测试消息结果 → {result}")
-        return result.get("ok", False)
-    except Exception as e:
-        log(f"测试消息都发不出去 → {e}")
-        return False
-
-if not test_send():
-    log("连最简单的测试消息都发不出去，99% 是 Token 或 Chat_ID 错了，脚本结束")
-    exit(1)
-
-log("测试消息成功！说明 Token 和 Chat_ID 完全正确，开始抓新闻")
-
 translator = Translator()
+
+def log(msg): print("LOG:", msg)
+
+def translate(text):
+    try:
+        time.sleep(0.7)
+        return translator.translate(text.strip(), dest='zh-cn').text
+    except:
+        return text.strip()
+
+def get_image(link):
+    try:
+        r = requests.get(link, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(r.text, 'lxml')
+        img = soup.find("meta", property="og:image")
+        return img["content"] if img else None
+    except:
+        return None
+
+def send(photo, caption):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "photo": photo,
+            "caption": caption[:1000],
+            "parse_mode": "HTML"
+        }, timeout=20)
+    except:
+        pass
+
+# 开头问好
+requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={
+    "chat_id": CHAT_ID,
+    "text": "晚上好！今晚最热科技新闻来啦",
+    "parse_mode": "HTML"
+})
+
 count = 0
-MAX = 8
+MAX = 10
 
 RSS = [
     "https://www.theverge.com/rss/index.xml",
     "https://techcrunch.com/feed/",
+    "https://www.wired.com/feed/rss",
+    "https://arstechnica.com/feed/",
     "https://feeds.feedburner.com/mittrchinese",
+    "https://rsshub.app/36kr/newsflashes",
+    "https://www.ifanr.com/feed",
+    "https://sspai.com/feed",
 ]
+
+seen = set()
 
 for url in RSS:
     if count >= MAX: break
-    log(f"正在抓取 → {url}")
     try:
         feed = feedparser.parse(url)
-        log(f"  拿到 {len(feed.entries)} 条")
-        for e in feed.entries[:6]:
+        for e in feed.entries:
             if count >= MAX: break
             title = re.sub('<[^>]+>', '', e.title)
+            if title in seen: continue
+            seen.add(title)
+
             link = e.link
+            img = get_image(link) or "https://s1.ax1x.com/2025/03/18/pEFd0fI.jpg"  # 备用图
 
-            # 翻译标题
-            try:
-                zh = translator.translate(title, dest='zh-cn').text
-            except:
-                zh = title
+            zh_title = translate(title)
 
-            caption = f"<b>{zh}</b>\n\n来源：科技新闻\n<a href='{link}'>阅读全文</a>"
+            caption = f"""<b>{zh_title}</b>
 
-            # 直接发文字消息（先不发图，最简单）
-            url_send = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            r = requests.post(url_send, data={
-                "chat_id": CHAT_ID,
-                "text": caption,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            }, timeout=15)
+来源：{feed.feed.get('title', '科技新闻').split(' - ')[0].split('|')[0]}
 
-            if r.json().get("ok"):
-                count += 1
-                log(f"成功发送 #{count}: {zh[:40]}")
-            else:
-                log(f"发送失败: {r.json()}")
+<a href="{link}">阅读全文</a>"""
 
-            time.sleep(4)
+            send(img, caption)
+            count += 1
+            log(f"成功 #{count}: {zh_title[:30]}")
+            time.sleep(4.5)
     except Exception as e:
-        log(f"抓取出错: {e}")
+        log(f"错误: {e}")
 
-log(f"本次共成功发送 {count} 条，结束")
-requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-              data={"chat_id": CHAT_ID, "text": f"科技新闻推送完毕，共 {count} 条"})
+# 结尾
+requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={
+    "chat_id": CHAT_ID,
+    "text": f"今晚科技精选 {count} 条已全部送达\n晚安",
+    "parse_mode": "HTML"
+})
