@@ -6,9 +6,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 translator = Translator()
 
-def log(msg): print("LOG:", msg)
-
 def translate(text):
+    if not text: return ""
     try:
         time.sleep(0.7)
         return translator.translate(text.strip(), dest='zh-cn').text
@@ -25,26 +24,22 @@ def get_image(link):
         return None
 
 def send(photo, caption):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    try:
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "photo": photo,
-            "caption": caption[:1000],
-            "parse_mode": "HTML"
-        }, timeout=20)
-    except:
-        pass
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data={
+        "chat_id": CHAT_ID,
+        "photo": photo,
+        "caption": caption[:1000],
+        "parse_mode": "HTML"
+    }, timeout=20)
 
-# 开头问好
+# 开头
 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={
     "chat_id": CHAT_ID,
-    "text": "晚上好！今晚最热科技新闻来啦",
-    "parse_mode": "HTML"
+    "text": "晚上好！今晚科技头条摘要版"
 })
 
 count = 0
 MAX = 10
+seen = set()
 
 RSS = [
     "https://www.theverge.com/rss/index.xml",
@@ -57,39 +52,44 @@ RSS = [
     "https://sspai.com/feed",
 ]
 
-seen = set()
-
 for url in RSS:
     if count >= MAX: break
     try:
         feed = feedparser.parse(url)
         for e in feed.entries:
             if count >= MAX: break
+            
             title = re.sub('<[^>]+>', '', e.title)
             if title in seen: continue
             seen.add(title)
-
+            
             link = e.link
-            img = get_image(link) or "https://s1.ax1x.com/2025/03/18/pEFd0fI.jpg"  # 备用图
+            img = get_image(link) or "https://s1.ax1x.com/2025/03/18/pEFd0fI.jpg"
+
+            # 取摘要（优先 summary → description → content）
+            raw_summary = getattr(e, 'summary', '') or getattr(e, 'description', '') or ''
+            summary = re.sub('<[^>]+>', '', raw_summary).strip()
+            if len(summary) > 180:
+                summary = summary[:180] + "…"
+            if summary:
+                summary = translate(summary)
 
             zh_title = translate(title)
 
-            caption = f"""<b>{zh_title}</b>
-
-来源：{feed.feed.get('title', '科技新闻').split(' - ')[0].split('|')[0]}
-
-<a href="{link}">阅读全文</a>"""
+            caption = f"<b>{zh_title}</b>\n"
+            if summary:
+                caption += f"\n{summary}\n"
+            caption += f"\n来源：{feed.feed.get('title','科技新闻').split(' - ')[0].split('|')[0]}\n"
+            caption += f"<a href='{link}'>查看完整报道 ›</a>"
 
             send(img, caption)
             count += 1
-            log(f"成功 #{count}: {zh_title[:30]}")
             time.sleep(4.5)
-    except Exception as e:
-        log(f"错误: {e}")
+    except:
+        continue
 
 # 结尾
 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={
     "chat_id": CHAT_ID,
-    "text": f"今晚科技精选 {count} 条已全部送达\n晚安",
-    "parse_mode": "HTML"
+    "text": f"今晚科技摘要 {count} 条已送达\n晚安"
 })
