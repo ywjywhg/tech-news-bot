@@ -17,8 +17,8 @@ if not CHAT_ID:
     log("ERROR: CHAT_ID 没拿到！")
     exit(1)
 
-log(f"Token 前6位: {BOT_TOKEN[:10]}...")
-log(f"Chat ID: {CHAT_ID")
+log("Token 前6位: " + BOT_TOKEN[:10] + "...")
+log("Chat ID: " + CHAT_ID)
 
 # 先发一句最简单的纯文字测试
 def test_send():
