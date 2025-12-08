@@ -1,57 +1,68 @@
-import feedparser, requests, re, time, os
-from googletrans import Translator
-from bs4 import BeautifulSoup
+import feedparser, requests, re, time, os, hashlib
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-translator = Translator()
 
-RSS = [
-    "https://www.theverge.com/rss/index.xml",           # The Verge
-    "https://techcrunch.com/feed/",                     # TechCrunch
-    "https://www.wired.com/feed/rss",                   # Wired
-    "https://arstechnica.com/feed/",                    # Ars Technica
-    "https://feeds.feedburner.com/mittrchinese",        # MIT 科技评论中文
-    "https://rsshub.app/36kr/newsflashes",              # 36氪快讯
-]
-
-def translate(text):
-    try:
-        time.sleep(0.8)
-        return translator.translate(text, dest='zh-cn').text
-    except:
-        return text
-
-def get_img(link):
-    try:
-        r = requests.get(link, timeout=8)
-        soup = BeautifulSoup(r.text, 'lxml')
-        img = soup.find("meta", property="og:image")
-        return img["content"] if img else None
-    except:
-        return None
+# 今天已经发过的链接（简单内存去重，防止早晚重复）
+SENT_TODAY = set()
 
 def send(photo, caption):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    requests.post(url, data={"chat_id": CHAT_ID, "photo": photo, "caption": caption[:1000], "parse_mode": "HTML"}, timeout=20)
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                      data={"chat_id": CHAT, "photo": photo, "caption": caption[:900], "parse_mode": "HTML"},
+                      timeout=15)
+    except:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      data={"chat_id": CHAT, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": False})
+
+def md5(s): return hashlib.md5(s.encode()).hexdigest()[:10]
+
+# 纯科技源（和早上的全球新闻几乎零重叠）
+TECH_RSS = [
+    "https://www.theverge.com/rss/index.xml",
+    "https://techcrunch.com/feed/",
+    "https://www.wired.com/feed/rss",
+    "https://arstechnica.com/feed/",
+    "https://www.engadget.com/rss.xml",
+    "https://feeds.feedburner.com/mittrchinese",           # MIT科技评论中文
+    "https://rsshub.app/36kr/newsflashes",                # 36氪
+    "https://rsshub.app/tmtpost/news",                    # 钛媒体
+    "https://rsshub.app/ifanr/news",                      # 爱范儿
+    "https://rsshub.app/huxiu/article",                   # 虎嗅
+]
 
 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-              data={"chat_id": CHAT_ID, "text": "晚上好！今晚最热科技新闻来啦"})
+              data={"chat_id": CHAT, "text": "晚上好！今晚科技圈新鲜事"})
 
 count = 0
-for url in RSS:
-    feed = feedparser.parse(url)
-    for e in feed.entries[:8]:
-        if count >= 12: break
-        title = re.sub('<[^>]+>', '', e.title)
-        link = e.link
-        img = get_img(link)
-        zh = translate(title)
-        cap = f"<b>{zh}</b>\n\n来源：{feed.feed.get('title','科技新闻')}\n<a href='{link}'>阅读全文</a>"
-        if img:
-            send(img, cap)
-        count += 1
-        time.sleep(4)
+for url in TECH_RSS:
+    try:
+        feed = feedparser.parse(url)
+        for e in feed.entries[:12]:
+            if count >= 15: break
+            link = e.link.strip()
+            key = md5(link)
+            if key in SENT_TODAY: continue
+            SENT_TODAY.add(key)
 
-requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-              data={"chat_id": CHAT_ID, "text": f"今晚科技精选 {count} 条已送达\n晚安"})
+            title = re.sub('<[^>]+>', '', e.title)
+            img = None
+            try:
+                r = requests.get(link, timeout=7)
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(r.text, 'lxml')
+                og = soup.find("meta", property="og:image")
+                if og: img = og["content"]
+            except: pass
+
+            cap = f"<b>{title}</b>\n\n来源：{feed.feed.get('title','科技新闻').split(' - ')[0]}\n<a href='{link}'>阅读全文</a>"
+            if img and img.startswith('http'):
+                send(img, cap)
+            else:
+                send(None, cap)
+            count += 1
+            time.sleep(4.5)
+    except: continue
+    if count >= 15: break
+
+requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/
