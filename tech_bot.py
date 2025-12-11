@@ -42,14 +42,13 @@ MAX = 10
 seen = set()
 
 RSS = [
-    "https://www.theverge.com/rss/index.xml",
-    "https://techcrunch.com/feed/",
+    "https://feeds.bbci.co.uk/news/technology/rss.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+    "https://cn.nytimes.com/rss/tech/",
+    "https://www.theguardian.com/us/technology/rss/",
+    "https://rss.cnn.com/rss/edition_technology.rss",
+    "https://www.aljazeera.com/xml/rss/sciencetech.xml",
     "https://www.wired.com/feed/rss",
-    "https://arstechnica.com/feed/",
-    "https://feeds.feedburner.com/mittrchinese",
-    "https://rsshub.app/36kr/newsflashes",
-    "https://www.ifanr.com/feed",
-    "https://sspai.com/feed",
 ]
 
 for url in RSS:
